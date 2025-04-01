@@ -440,27 +440,35 @@ DEPFLAGS = %(makedep_args)s -MF $(depfile).raw
 # Doesn't work with spaces, but that's fine: .d files have spaces in
 # their names replaced with other characters."""
     r"""
-define fixup_dep
-# The depfile may not exist if the input file didn't have any #includes.
-touch $(depfile).raw
+define fixup_dep \
+# The depfile may not exist if the input file didn't have any #includes. \
+touch $(depfile).raw \
 # Fixup path as in (1).""" +
-    (r"""
-sed -e "s|^$(notdir $@)|$@|" -re 's/\\\\([^$$])/\/\1/g' $(depfile).raw >> $(depfile)"""
-    if sys.platform == 'win32' else r"""
-sed -e "s|^$(notdir $@)|$@|" $(depfile).raw >> $(depfile)""") +
-    r"""
-# Add extra rules as in (2).
-# We remove slashes and replace spaces with new lines;
-# remove blank lines;
-# delete the first line and append a colon to the remaining lines.""" +
-    ("""
-sed -e 's/\\\\\\\\$$//' -e 's/\\\\\\\\/\\//g' -e 'y| |\\n|' $(depfile).raw |\\"""
-    if sys.platform == 'win32' else """
-sed -e 's|\\\\||' -e 'y| |\\n|' $(depfile).raw |\\""") +
-    r"""
-  grep -v '^$$'                             |\
-  sed -e 1d -e 's|$$|:|'                     \
-    >> $(depfile)
+    (r""" \
+sed -e "s|^$(notdir $@)|$@|" -re 's/\\\\([^$$])/\/\1/g' $(depfile).raw >> $(depfile)""" 
+    if sys.platform == 'win32' else r""" \
+sed -e "s|^$(notdir $@)|$@|" $(depfile).raw >> $(depfile)""") + 
+    r""" \
+# Add extra rules as in (2). \
+# Goal: create dummy rules for each dependency listed after the first line's colon. \
+# 1. Join continued lines into one long line ending with the list of dependencies. \
+# 2. Normalize path separators (Windows \ -> /). \
+# 3. Extract dependencies (everything after the first colon). \
+# 4. Replace spaces between dependencies with newlines. \
+# 5. Filter out empty lines. \
+# 6. Append a colon to each dependency line. \
+# NOTE: Using awk might be more robust but introduces another dependency. Sticking with sed. \
+# Process the raw file to get the list of dependencies, one per line, ending with ':' \
+# Step 1 & 2: Join lines and normalize slashes \
+sed -e ':a; /\\$$/N; s/\\\n//; ta' -e 's/\\/\//g' $(depfile).raw |\
+# Step 3 & 4: Extract deps after colon, split by space, print one per line \
+sed -n -e 's/^[^:]*: *//p' |\
+  tr -s ' ' '\n' |\
+# Step 5: Filter empty lines (e.g., from multiple spaces) \
+      grep -v '^\s*$$' |\
+# Step 6: Add the trailing colon for the dummy rule \
+  sed -e 's/$$/:/' \
+  >> $(depfile) \
 rm $(depfile).raw
 endef
 """
@@ -857,7 +865,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
         else:
             self.xcode_settings = None
 
-        # DEBUG ADDED - Store normalized node_gyp_dir (Try spec vars first, fallback to __file__)
         self.abs_node_gyp_dir = None # Initialize
         source_of_gyp_dir = "Not Found" # For debugging message
 
@@ -865,7 +872,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
         variables = spec.get('variables', {})
         node_gyp_dir_from_vars = variables.get('node_gyp_dir')
         if node_gyp_dir_from_vars:
-            print(f"DEBUG [make.py Write]: Found node_gyp_dir in spec variables: '{node_gyp_dir_from_vars}'", file=sys.stderr)
             try:
                 # os.path.abspath should hopefully normalize MSYS paths like /home/...
                 # to the E:/... format if run under MSYS Python.
@@ -880,7 +886,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
 
         # Attempt 2: Fallback using __file__ if not found or normalization failed
         if not self.abs_node_gyp_dir:
-             print(f"DEBUG [make.py Write]: node_gyp_dir not found or failed to normalize from spec variables. Attempting fallback using __file__.", file=sys.stderr)
              try:
                  # __file__ gives path to make.py. Go up 5 levels.
                  script_path = os.path.abspath(__file__)
@@ -891,15 +896,8 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                  self.abs_node_gyp_dir = calculated_dir
                  source_of_gyp_dir = "__file__ fallback"
              except Exception as e:
-                 print(f"DEBUG [make.py Write]: Failed to calculate node_gyp_dir using __file__: {e}", file=sys.stderr)
                  self.abs_node_gyp_dir = None # Ensure it's None if fallback fails
 
-        # Final Debug Print
-        if self.abs_node_gyp_dir:
-            print(f"DEBUG [make.py Write]: Using abs_node_gyp_dir='{self.abs_node_gyp_dir}' (Source: {source_of_gyp_dir})", file=sys.stderr)
-        else:
-            print(f"DEBUG [make.py Write]: Could not determine abs_node_gyp_dir from variables or fallback.", file=sys.stderr)
-        # /DEBUG ADDED
 
         deps, link_deps = self.ComputeDeps(spec)
 
@@ -1438,8 +1436,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
         part_of_all: flag indicating this target is part of 'all'
         """
 
-        # --- Configuration-specific variables (CFLAGS, INCS, etc.) ---
-        # --- (Keep this section exactly as it was in the previous correct version or original) ---
         for configname in sorted(configs.keys()):
             config = configs[configname]
             self.WriteList(
@@ -1448,51 +1444,32 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                 prefix="-D",
                 quoter=EscapeCppDefine,
             )
-            # (Assume rest of cflags/includes logic is here and correct)
-            # ...
             includes = config.get("include_dirs")
             if includes:
                 includes = [Sourceify(self.Absolutify(i)) for i in includes]
             self.WriteList(includes, "INCS_%s" % configname, prefix="-I")
-        # --- /Configuration-specific variables ---
 
 
-        # --- Calculate Objects & Generate Explicit Rules ---
         compilable = list(filter(Compilable, sources))
         objs = [] # Store final object paths (quoted)
         obj_map_unquoted_to_quoted = {} # Map unquoted paths used by PCH to quoted ones
         generated_explicit_rule_for = set() # Track sources handled explicitly
 
-        print(f"DEBUG [make.py WriteSources]: Processing compilable sources: {compilable}", file=sys.stderr)
 
         for source_path in compilable:
-            print(f"DEBUG [make.py WriteSources]: --- Handling source_path='{source_path}'", file=sys.stderr)
 
-            # --- Use ORIGINAL logic to determine input for Objectify ---
-            # Absolutify uses self.path as base for relative paths, returns abs paths as is.
-            # Target() adds the .o extension.
-            # This gives path relative to project root (for relative sources) or absolute path.
             input_to_objectify = self.Absolutify(Target(source_path))
-            print(f"DEBUG [make.py WriteSources]: Input to Objectify = '{input_to_objectify}'", file=sys.stderr)
 
-            # --- Call ORIGINAL Objectify logic ---
-            # Objectify prepends $(obj).$(TOOLSET)/$(TARGET)/ if needed.
             obj_path_unquoted = self.Objectify(input_to_objectify)
-            print(f"DEBUG [make.py WriteSources]: Path AFTER Objectify (unquoted) = '{obj_path_unquoted}'", file=sys.stderr)
 
-            # --- Quote the final path ---
             quoted_obj_path = QuoteSpaces(obj_path_unquoted)
-            print(f"DEBUG [make.py WriteSources]: Final calculated (quoted) object path: '{quoted_obj_path}'", file=sys.stderr)
 
             objs.append(quoted_obj_path)
             obj_map_unquoted_to_quoted[obj_path_unquoted] = quoted_obj_path # Store mapping for PCH
 
-            # --- Generate explicit rule ONLY for absolute source paths ---
             is_abs_source = os.path.isabs(source_path)
             if is_abs_source:
-                # Dependency path should be the original absolute source, quoted & sep-normalized
                 dependency_source_path = QuoteSpaces(replace_sep(source_path))
-                print(f"DEBUG [make.py WriteSources]: Generating EXPLICIT rule for '{quoted_obj_path}' from dependency '{dependency_source_path}'", file=sys.stderr)
                 source_ext = os.path.splitext(source_path)[1]
                 compile_cmd = COMPILABLE_EXTENSIONS.get(source_ext)
                 if compile_cmd:
@@ -1500,12 +1477,8 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                    self.WriteLn(f"\t@$(call do_cmd,{compile_cmd},1)")
                    self.WriteLn()
                    generated_explicit_rule_for.add(source_path)
-                else:
-                   print(f"WARN [make.py WriteSources]: Cannot determine compile command for extension '{source_ext}'", file=sys.stderr)
-        # --- /Calculate Objects & Generate Explicit Rules ---
 
 
-        # --- Write OBJS list and subsequent dependencies/flags ---
         self.WriteList(objs, "OBJS") # Write the list of quoted object paths
         obj_list_str = ' '.join(objs)
 
@@ -1529,8 +1502,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                 matching_quoted_obj = obj_map_unquoted_to_quoted.get(obj_unquoted) # Use map to find quoted path
                 if matching_quoted_obj:
                     self.WriteLn(f"{matching_quoted_obj}: {QuoteSpaces(gch)}")
-                else:
-                    print(f"WARN [make.py WriteSources]: Could not find matching quoted obj path for PCH dep '{obj_unquoted}'", file=sys.stderr)
             self.WriteLn("# End precompiled header dependencies")
 
         # Apply Build Flags
@@ -1565,7 +1536,6 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
              self.WriteLn("# End of this set of suffix rules")
 
         self.WriteLn()
-        # --- /Write OBJS list and subsequent dependencies/flags ---
 
     def WritePchTargets(self, pch_commands):
         """Writes make rules to compile prefix headers."""
@@ -1793,13 +1763,11 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                         "LIBTOOLFLAGS_%s" % configname,
                     )
             libraries = spec.get("libraries")
-            #print(f"DEBUG [make.py WriteTarget]: Initial libraries from spec: {libraries}", file=sys.stderr) # DEBUG ADDED
             if libraries:
                 # Remove duplicate entries
                 libraries = gyp.common.uniquer(libraries)
                 if self.flavor == "mac":
                     libraries = self.xcode_settings.AdjustLibraries(libraries)
-            print(f"DEBUG [make.py WriteTarget]: Libraries before WriteList call for LIBS: {libraries}", file=sys.stderr) # DEBUG ADDED
             self.WriteList(libraries, "LIBS")
             self.WriteLn(
                 "%s: GYP_LDFLAGS := $(LDFLAGS_$(BUILDTYPE))"
@@ -2121,32 +2089,19 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
              foo = blaha blahb
         but in a pretty-printed style.
         """
-        #print(f"DEBUG [make.py WriteList]: START Variable='{variable}', InputList='{value_list}', Prefix='{prefix}'", file=sys.stderr) # DEBUG ADDED
         values = ""
-        processed_values = [] # DEBUG ADDED
+        processed_values = []
         if value_list:
-            # value_list = [replace_sep(quoter(prefix + value)) for value in value_list] # DEBUG Original line commented
-            for value in value_list: # DEBUG ADDED loop for clarity
-                #print(f"DEBUG [make.py WriteList]: --- Processing value='{value}' (type: {type(value)})", file=sys.stderr) # DEBUG ADDED$`
-                prefixed_value = prefix + value # DEBUG ADDED
-                #print(f"DEBUG [make.py WriteList]: --- Prefixed value='{prefixed_value}'", file=sys.stderr) # DEBUG ADDED
-				# DEBUG START - Conditional processing for library paths
+            for value in value_list:
+                prefixed_value = prefix + value
                 processed = None
                 if variable == 'LIBS' and value.startswith('-l"') and value.endswith('"'):
-                     # Handle the already windows-pathed and quoted libnode case specifically
-                     # Try to just use the value as-is, hoping the E:/ path works for the linker?
-                     # Or potentially try converting E:/ back to /e/ here? Let's try passing it through first.
                      processed = value
-                     #print(f"DEBUG [make.py WriteList]: --- Special LIBS case detected, passing through value='{processed}'", file=sys.stderr) # DEBUG ADDED
                 else:
-                     # Original processing for other variables/values
-                    quoted_value = quoter(prefixed_value) # DEBUG Re-enabled original line
-                    #print(f"DEBUG [make.py WriteList]: --- Quoted value='{quoted_value}'", file=sys.stderr) # DEBUG ADDED
-                    processed = replace_sep(quoted_value) # DEBUG Re-enabled original line
-                # DEBUG END - Conditional processing
-                #print(f"DEBUG [make.py WriteList]: --- Final Processed value='{processed}'", file=sys.stderr) # DEBUG ADDED
-                processed_values.append(processed) # DEBUG ADDED                
-            values = " \\\n\t" + " \\\n\t".join(processed_values) # DEBUG Use processed list
+                    quoted_value = quoter(prefixed_value)
+                    processed = replace_sep(quoted_value)
+                processed_values.append(processed)
+            values = " \\\n\t" + " \\\n\t".join(processed_values)
         self.fp.write(f"{variable} :={values}\n\n")
         
     def WriteDoCmd(
@@ -2376,60 +2331,39 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
             self.WriteLn(f"{QuoteSpaces(target)}: export {k} := {v}")
     def Objectify(self, path):
                 """Convert a path to its output directory form."""
-                print(f"DEBUG [make.py Objectify]: ENTER with path='{path}' (type: {type(path)})", file=sys.stderr)
     
                 path_segment = path # Start with the original path segment
     
-                # --- Calculate relative path segment if absolute and in node_gyp_dir ---
                 is_abs_path = os.path.isabs(path)
                 is_in_node_gyp_dir = False
                 # Ensure self.abs_node_gyp_dir was successfully set in Write()
                 if is_abs_path and self.abs_node_gyp_dir and path.startswith(self.abs_node_gyp_dir):
                      is_in_node_gyp_dir = True
     
-                print(f"DEBUG [make.py Objectify]: is_abs_path={is_abs_path}, abs_node_gyp_dir='{self.abs_node_gyp_dir}', is_in_node_gyp_dir={is_in_node_gyp_dir}", file=sys.stderr)
     
                 if is_in_node_gyp_dir:
-                     print(f"DEBUG [make.py Objectify]: Path '{path}' is absolute and inside abs_node_gyp_dir. Calculating relative path.", file=sys.stderr)
                      try:
                          # Calculate path relative to abs_node_gyp_dir itself.
                          base_for_relpath = self.abs_node_gyp_dir # Use node_gyp_dir as base
                          rel_path = os.path.relpath(path, base_for_relpath)
-                         print(f"DEBUG [make.py Objectify]: os.path.relpath('{path}', '{base_for_relpath}') result='{rel_path}'", file=sys.stderr)
                          # Ensure forward slashes for Makefile compatibility
                          rel_path_unix = rel_path.replace('\\', '/')
-                         print(f"DEBUG [make.py Objectify]: Relative path segment (unix slashes)='{rel_path_unix}'", file=sys.stderr)
                          path_segment = rel_path_unix # Use the relative path segment instead!
                      except ValueError as e:
                          print(f"DEBUG [make.py Objectify]: os.path.relpath failed: {e}. Using original absolute path segment.", file=sys.stderr)
-                         # Keep original path_segment if relpath fails
-                else:
-                     print(f"DEBUG [make.py Objectify]: Path is not absolute within abs_node_gyp_dir or abs_node_gyp_dir not set. Using path segment '{path_segment}' as is.", file=sys.stderr)
-                # --- /Calculate relative path segment ---
     
-    
-                # --- Apply prefix logic using path_segment ---
                 final_path = path_segment # Initialize final path with the (potentially modified) segment
     
                 # Check 1: Handle paths already containing variables like $(obj)/
                 if "$(" in path_segment:
-                    print(f"DEBUG [make.py Objectify]: Path segment '{path_segment}' contains '$('", file=sys.stderr)
                     if path_segment.startswith("$(obj)/"):
                          final_path = path_segment.replace("$(obj)/", "$(obj).%s/$(TARGET)/" % self.toolset, 1)
-                         print(f"DEBUG [make.py Objectify]: Path segment after replace('$(obj)/'): '{final_path}'", file=sys.stderr)
                     # else: path remains path_segment if it has $(...) but not $(obj)/ start
                 # Check 2: Prepend prefix if path segment doesn't contain $(obj)
                 elif "$(obj)" not in path_segment:
-                    print(f"DEBUG [make.py Objectify]: Path segment '{path_segment}' does not contain '$(obj)', prepending standard prefix.", file=sys.stderr)
                     prefix = f"$(obj).{self.toolset}/$(TARGET)/"
-                    print(f"DEBUG [make.py Objectify]: Calculated Prefix='{prefix}'", file=sys.stderr)
                     final_path = prefix + path_segment # PREPEND PREFIX
-                # Check 3: Path segment already contains $(obj) but not at start? Leave as is.
-                else:
-                     print(f"DEBUG [make.py Objectify]: Path segment '{path_segment}' already contains '$(obj)', not prepending prefix.", file=sys.stderr)
-                # --- /Apply prefix ---
     
-                print(f"DEBUG [make.py Objectify]: RETURN with final_path='{final_path}'", file=sys.stderr)
                 return final_path
     
     def Pchify(self, path, lang):
