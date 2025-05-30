@@ -1444,6 +1444,30 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
                 prefix="-D",
                 quoter=EscapeCppDefine,
             )
+            if self.flavor == "mac":
+                cflags = self.xcode_settings.GetCflags(
+                    configname, arch=config.get("xcode_configuration_platform")
+                )
+                cflags_c = self.xcode_settings.GetCflagsC(configname)
+                cflags_cc = self.xcode_settings.GetCflagsCC(configname)
+                cflags_objc = self.xcode_settings.GetCflagsObjC(configname)
+                cflags_objcc = self.xcode_settings.GetCflagsObjCC(configname)
+            else:
+                cflags = config.get("cflags")
+                cflags_c = config.get("cflags_c")
+                cflags_cc = config.get("cflags_cc")
+
+            self.WriteLn("# Flags passed to all source files.")
+            self.WriteList(cflags, "CFLAGS_%s" % configname)
+            self.WriteLn("# Flags passed to only C files.")
+            self.WriteList(cflags_c, "CFLAGS_C_%s" % configname)
+            self.WriteLn("# Flags passed to only C++ files.")
+            self.WriteList(cflags_cc, "CFLAGS_CC_%s" % configname)
+            if self.flavor == "mac":
+                self.WriteLn("# Flags passed to only ObjC files.")
+                self.WriteList(cflags_objc, "CFLAGS_OBJC_%s" % configname)
+                self.WriteLn("# Flags passed to only ObjC++ files.")
+                self.WriteList(cflags_objcc, "CFLAGS_OBJCC_%s" % configname)
             includes = config.get("include_dirs")
             if includes:
                 includes = [Sourceify(self.Absolutify(i)) for i in includes]
@@ -1511,8 +1535,24 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
             self.WriteLn(f"{obj_list_str}: GYP_CFLAGS := $(DEFS_$(BUILDTYPE)) $(INCS_$(BUILDTYPE)) {precompiled_header.GetInclude('c')} $(CFLAGS_$(BUILDTYPE)) $(CFLAGS_C_$(BUILDTYPE))")
             self.WriteLn(f"{obj_list_str}: GYP_CXXFLAGS := $(DEFS_$(BUILDTYPE)) $(INCS_$(BUILDTYPE)) {precompiled_header.GetInclude('cc')} $(CFLAGS_$(BUILDTYPE)) $(CFLAGS_CC_$(BUILDTYPE))")
             if self.flavor == "mac": # Add Mac flags if needed
-                self.WriteLn(f"{obj_list_str}: GYP_OBJCFLAGS := ...")
-                self.WriteLn(f"{obj_list_str}: GYP_OBJCXXFLAGS := ...")
+                self.WriteLn(
+                    "$(OBJS): GYP_OBJCFLAGS := "
+                    "$(DEFS_$(BUILDTYPE)) "
+                    "$(INCS_$(BUILDTYPE)) "
+                    "%s " % precompiled_header.GetInclude("m")
+                    + "$(CFLAGS_$(BUILDTYPE)) "
+                    "$(CFLAGS_C_$(BUILDTYPE)) "
+                    "$(CFLAGS_OBJC_$(BUILDTYPE))"
+                )
+                self.WriteLn(
+                    "$(OBJS): GYP_OBJCXXFLAGS := "
+                    "$(DEFS_$(BUILDTYPE)) "
+                    "$(INCS_$(BUILDTYPE)) "
+                    "%s " % precompiled_header.GetInclude("mm")
+                    + "$(CFLAGS_$(BUILDTYPE)) "
+                    "$(CFLAGS_CC_$(BUILDTYPE)) "
+                    "$(CFLAGS_OBJCC_$(BUILDTYPE))"
+                )
 
         self.WritePchTargets(precompiled_header.GetPchBuildCommands())
 
