@@ -169,7 +169,7 @@
         ],
         'libraries': [
           [
-            '<(msbuild_toolset)!="" and "<(msbuild_toolset)"!="<undefined>"', {
+             'generator=="msvs"', {
               'libraries': [
                 '-lkernel32.lib',
                 '-luser32.lib',
